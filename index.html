@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Closet</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#3C5570">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="tag-wordmark">
+    <span class="tag-hole"></span>
+    <span>Closet</span>
+  </div>
+</header>
+
+<!-- ===== CLOSET SCREEN ===== -->
+<main id="screen-closet" class="screen active">
+  <div class="closet-toolbar">
+    <div class="filter-row" id="filterRow">
+      <button class="chip active" data-filter="all">All</button>
+      <button class="chip" data-filter="top">Tops</button>
+      <button class="chip" data-filter="outerwear">Outerwear</button>
+      <button class="chip" data-filter="bottom">Bottoms</button>
+      <button class="chip" data-filter="shoes">Shoes</button>
+      <button class="chip" data-filter="accessory">Accessories</button>
+      <button class="chip" data-filter="body">Body</button>
+    </div>
+  </div>
+  <div id="closetGrid" class="closet-grid"></div>
+  <p id="closetEmpty" class="empty-state" hidden>Nothing in here yet. Tap + to photograph your first item.</p>
+</main>
+
+<!-- ===== OUTFIT SCREEN ===== -->
+<main id="screen-outfit" class="screen">
+  <div class="outfit-toolbar">
+    <button id="clearOutfitBtn" class="text-btn">Clear</button>
+    <span class="outfit-hint">Drag items onto the figure</span>
+    <button id="saveOutfitBtn" class="text-btn accent">Save look</button>
+  </div>
+  <div id="outfitCanvas" class="outfit-canvas">
+    <div id="outfitDropHint" class="drop-hint">Add a body item from your closet, then layer clothes on top.</div>
+  </div>
+  <div class="outfit-tray-wrap">
+    <div id="outfitTray" class="outfit-tray"></div>
+  </div>
+</main>
+
+<!-- ===== ADD FLOW (photo -> trace -> [split] -> category -> save) ===== -->
+<main id="screen-add" class="screen">
+  <div class="add-header">
+    <button id="addBack" class="text-btn">Cancel</button>
+    <span id="addStepLabel" class="add-step-label">Photograph item</span>
+    <span style="width:52px"></span>
+  </div>
+
+  <div id="addStepCapture" class="add-step active">
+    <div class="capture-box">
+      <label for="captureInput" class="capture-btn">Take or choose photo</label>
+      <input id="captureInput" type="file" accept="image/*" capture="environment" hidden>
+    </div>
+  </div>
+
+  <div id="addStepTrace" class="add-step">
+    <p class="step-instructions">Tap around the edge of the item to trace it. Tap the first point again to close the shape.</p>
+    <div class="canvas-wrap">
+      <canvas id="traceCanvas"></canvas>
+    </div>
+    <div class="step-actions">
+      <button id="traceUndo" class="text-btn">Undo point</button>
+      <button id="traceConfirm" class="primary-btn" disabled>Cut out</button>
+    </div>
+  </div>
+
+  <div id="addStepCategory" class="add-step">
+    <p class="step-instructions">What kind of item is this?</p>
+    <div class="cutout-preview-wrap">
+      <canvas id="cutoutPreview"></canvas>
+    </div>
+    <div class="category-grid" id="categoryGrid">
+      <button class="cat-btn" data-cat="top">Top</button>
+      <button class="cat-btn" data-cat="outerwear">Outerwear</button>
+      <button class="cat-btn" data-cat="bottom">Bottom</button>
+      <button class="cat-btn" data-cat="shoes">Shoes</button>
+      <button class="cat-btn" data-cat="accessory">Accessory</button>
+      <button class="cat-btn" data-cat="body">Body (you)</button>
+    </div>
+    <label class="open-front-check" id="openFrontRow" hidden>
+      <input type="checkbox" id="openFrontToggle">
+      This item is worn open (jacket/cardigan) and should split into left/right panels
+    </label>
+    <button id="categoryContinue" class="primary-btn" disabled>Continue</button>
+  </div>
+
+  <div id="addStepSplit" class="add-step">
+    <p class="step-instructions">Draw one line down the opening — the app will separate the left and right panels along it.</p>
+    <div class="canvas-wrap">
+      <canvas id="splitCanvas"></canvas>
+    </div>
+    <div class="step-actions">
+      <button id="splitReset" class="text-btn">Redraw line</button>
+      <button id="splitConfirm" class="primary-btn" disabled>Split &amp; save</button>
+    </div>
+  </div>
+
+  <div id="addStepSave" class="add-step">
+    <p class="step-instructions">Name it (optional) and save to your closet.</p>
+    <div class="save-preview-wrap" id="savePreviewWrap"></div>
+    <input id="itemNameInput" class="name-input" type="text" placeholder="e.g. Navy field jacket" maxlength="40">
+    <button id="finalSaveBtn" class="primary-btn">Save to closet</button>
+  </div>
+</main>
+
+<nav class="tab-bar">
+  <button class="tab-btn active" data-screen="closet">
+    <span class="tab-icon">👕</span><span>Closet</span>
+  </button>
+  <button id="addTabBtn" class="tab-btn add-tab-btn">
+    <span class="tab-icon plus">+</span>
+  </button>
+  <button class="tab-btn" data-screen="outfit">
+    <span class="tab-icon">🧍</span><span>Outfit</span>
+  </button>
+</nav>
+
+<script src="app.js"></script>
+</body>
+</html>
