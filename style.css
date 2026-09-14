@@ -194,6 +194,19 @@ body{
   filter:drop-shadow(0 3px 5px rgba(0,0,0,0.45));
 }
 .outfit-item.dragging{cursor:grabbing;z-index:999 !important;}
+.item-delete{
+  position:absolute;
+  top:-8px;right:-8px;
+  width:22px;height:22px;
+  border-radius:50%;
+  border:1px solid var(--line);
+  background:var(--surface-2);
+  color:var(--ink);
+  font-size:14px;
+  line-height:1;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 1px 3px rgba(0,0,0,0.4);
+}
 
 .outfit-tray-wrap{flex:0 0 auto;padding-top:12px;}
 .outfit-tray{

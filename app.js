@@ -157,6 +157,48 @@ function loadImage(src) {
   });
 }
 
+/* ---- Magnetic edge snapping (Sobel gradient magnitude, classic image processing) ---- */
+function computeEdgeMap(canvas) {
+  const w = canvas.width, h = canvas.height;
+  const data = canvas.getContext("2d").getImageData(0, 0, w, h).data;
+  const gray = new Float32Array(w * h);
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    gray[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  }
+  const mag = new Float32Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const gx = -gray[i - w - 1] + gray[i - w + 1] - 2 * gray[i - 1] + 2 * gray[i + 1] - gray[i + w - 1] + gray[i + w + 1];
+      const gy = -gray[i - w - 1] - 2 * gray[i - w] - gray[i - w + 1] + gray[i + w - 1] + 2 * gray[i + w] + gray[i + w + 1];
+      mag[i] = Math.sqrt(gx * gx + gy * gy);
+    }
+  }
+  return { mag, w, h };
+}
+const EDGE_SNAP_RADIUS = 12;
+const EDGE_SNAP_THRESHOLD = 45; // minimum gradient strength to count as a real edge
+function snapToEdge(p, edgeMap) {
+  if (!edgeMap) return p;
+  const { mag, w, h } = edgeMap;
+  const cx = Math.round(p.x), cy = Math.round(p.y);
+  let bestX = cx, bestY = cy, bestVal = -1;
+  const r2 = EDGE_SNAP_RADIUS * EDGE_SNAP_RADIUS;
+  for (let dy = -EDGE_SNAP_RADIUS; dy <= EDGE_SNAP_RADIUS; dy++) {
+    const yy = cy + dy;
+    if (yy < 1 || yy >= h - 1) continue;
+    for (let dx = -EDGE_SNAP_RADIUS; dx <= EDGE_SNAP_RADIUS; dx++) {
+      if (dx * dx + dy * dy > r2) continue;
+      const xx = cx + dx;
+      if (xx < 1 || xx >= w - 1) continue;
+      const v = mag[yy * w + xx];
+      if (v > bestVal) { bestVal = v; bestX = xx; bestY = yy; }
+    }
+  }
+  if (bestVal >= EDGE_SNAP_THRESHOLD) return { x: bestX, y: bestY, snapped: true };
+  return { x: p.x, y: p.y, snapped: false };
+}
+
 /* ============================================================
    ADD FLOW STATE
    ============================================================ */
@@ -197,6 +239,7 @@ document.getElementById("captureInput").addEventListener("change", async (e) => 
   if (!file) return;
   const url = URL.createObjectURL(file);
   const img = await loadImage(url);
+  URL.revokeObjectURL(url);
   addState.photoImg = img;
 
   const MAX = 900;
@@ -207,6 +250,7 @@ document.getElementById("captureInput").addEventListener("change", async (e) => 
   base.getContext("2d").drawImage(img, 0, 0, w, h);
   addState.baseCanvas = base;
   addState.tracePoints = [];
+  addState.edgeMap = computeEdgeMap(base);
 
   setupTraceCanvas();
   goAddStep("addStepTrace", "Trace the item");
@@ -238,6 +282,16 @@ function drawTrace() {
       ctx.arc(p.x, p.y, i === 0 ? 6 : 3.5, 0, Math.PI * 2);
       ctx.fill();
     });
+    if (pts.length > 2) {
+      ctx.save();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = "rgba(189,90,63,0.6)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(pts[0].x, pts[0].y, 18, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 }
 function canvasPointFromEvent(canvas, e) {
@@ -247,10 +301,12 @@ function canvasPointFromEvent(canvas, e) {
   return { x: (t.clientX - rect.left) * sx, y: (t.clientY - rect.top) * sy };
 }
 traceCanvas.addEventListener("pointerdown", (e) => {
-  const p = canvasPointFromEvent(traceCanvas, e);
+  const raw = canvasPointFromEvent(traceCanvas, e);
+  const snapped = snapToEdge(raw, addState.edgeMap);
+  const p = { x: snapped.x, y: snapped.y };
   const pts = addState.tracePoints;
   if (pts.length > 2) {
-    const d = Math.hypot(p.x - pts[0].x, p.y - pts[0].y);
+    const d = Math.hypot(raw.x - pts[0].x, raw.y - pts[0].y);
     if (d < 18) {
       document.getElementById("traceConfirm").disabled = false;
       drawTrace();
@@ -284,12 +340,15 @@ document.querySelectorAll(".cat-btn").forEach(btn => {
     btn.classList.add("selected");
     addState.category = btn.dataset.cat;
     document.getElementById("categoryContinue").disabled = false;
-    document.getElementById("openFrontRow").hidden = addState.category !== "outerwear";
+    const isOuterwear = addState.category === "outerwear";
+    document.getElementById("openFrontRow").hidden = !isOuterwear;
+    if (!isOuterwear) document.getElementById("openFrontToggle").checked = false;
   });
 });
 document.getElementById("categoryContinue").addEventListener("click", () => {
-  addState.openFront = document.getElementById("openFrontToggle").checked;
-  if (addState.openFront) {
+  const wantsSplit = addState.category === "outerwear" && document.getElementById("openFrontToggle").checked;
+  addState.openFront = wantsSplit;
+  if (wantsSplit) {
     setupSplitCanvas();
     goAddStep("addStepSplit", "Mark the opening");
   } else {
@@ -510,7 +569,8 @@ async function renderTray() {
   await restoreOutfitState();
 }
 
-function addItemToOutfit(displayItem) {
+async function addItemToOutfit(displayItem) {
+  await loadItemsCache();
   dropHint.style.display = "none";
   const canvasW = outfitCanvas.clientWidth, canvasH = outfitCanvas.clientHeight;
   const groupId = uuid();
@@ -519,6 +579,8 @@ function addItemToOutfit(displayItem) {
   const members = displayItem.pairId
     ? [itemsCache[displayItem.id], Object.values(itemsCache).find(x => x.pairId === displayItem.pairId && x.id !== displayItem.id)]
     : [displayItem];
+
+  if (!members[0]) return; // item no longer exists (deleted elsewhere); nothing to place
 
   const pairW = members[0].pairWidth, pairH = members[0].pairHeight;
   const scale = targetH / pairH;
@@ -559,7 +621,7 @@ function renderOutfitCanvas() {
       el.style.height = inst.h + "px";
       el.style.zIndex = inst.z;
       el.dataset.instanceId = inst.instanceId;
-      el.innerHTML = `<img src="${item.img}" alt="">`;
+      el.innerHTML = `<img src="${item.img}" alt=""><button class="item-delete" type="button" aria-label="Remove">&times;</button>`;
       attachDrag(el, inst);
       outfitCanvas.appendChild(el);
     });
@@ -567,19 +629,32 @@ function renderOutfitCanvas() {
 }
 
 function attachDrag(el, inst) {
-  let startX, startY, origX, origY, groupMembers;
+  let startX, startY, groupMembers, dragged;
+
+  el.querySelector(".item-delete").addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+  });
+  el.querySelector(".item-delete").addEventListener("click", (e) => {
+    e.stopPropagation();
+    placedInstances = placedInstances.filter(i => i.groupId !== inst.groupId);
+    renderOutfitCanvas();
+    saveOutfitState();
+  });
+
   el.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".item-delete")) return;
     e.preventDefault();
+    dragged = false;
     el.classList.add("dragging");
     startX = e.clientX; startY = e.clientY;
-    origX = inst.x; origY = inst.y;
     groupMembers = placedInstances.filter(i => i.groupId === inst.groupId);
     groupMembers.forEach(m => { m._origX = m.x; m._origY = m.y; });
-    el.setPointerCapture(e.pointerId);
+    try { el.setPointerCapture(e.pointerId); } catch (err) {}
   });
   el.addEventListener("pointermove", (e) => {
     if (!el.classList.contains("dragging")) return;
     const dx = e.clientX - startX, dy = e.clientY - startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragged = true;
     groupMembers.forEach(m => {
       m.x = m._origX + dx;
       m.y = m._origY + dy;
@@ -589,19 +664,8 @@ function attachDrag(el, inst) {
   });
   el.addEventListener("pointerup", (e) => {
     el.classList.remove("dragging");
-    el.releasePointerCapture(e.pointerId);
-    saveOutfitState();
-  });
-  // double-tap to remove
-  let lastTap = 0;
-  el.addEventListener("pointerdown", () => {
-    const now = Date.now();
-    if (now - lastTap < 320) {
-      placedInstances = placedInstances.filter(i => i.groupId !== inst.groupId);
-      renderOutfitCanvas();
-      saveOutfitState();
-    }
-    lastTap = now;
+    try { el.releasePointerCapture(e.pointerId); } catch (err) {}
+    if (dragged) saveOutfitState();
   });
 }
 
