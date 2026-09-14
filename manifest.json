@@ -3,8 +3,8 @@
   "short_name": "Closet",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#E7E3DC",
-  "theme_color": "#3C5570",
+  "background_color": "#14171A",
+  "theme_color": "#14171A",
   "orientation": "portrait",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
