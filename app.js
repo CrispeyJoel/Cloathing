@@ -266,6 +266,7 @@ function attachCanvasInteraction(canvas, wrap, zp, onTap) {
   let mode = null; // "maybe" | "pan" | "pinch"
   let startDist = 0, startZoom = 1;
   let downInfo = null, panStartTxTy = null;
+  let hadPinch = false; // true once this gesture has involved 2 fingers
 
   function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
@@ -282,6 +283,7 @@ function attachCanvasInteraction(canvas, wrap, zp, onTap) {
       startDist = dist(a, b);
       startZoom = zp.state.zoom;
       mode = "pinch";
+      hadPinch = true;
     }
   });
   canvas.addEventListener("pointermove", (e) => {
@@ -309,7 +311,7 @@ function attachCanvasInteraction(canvas, wrap, zp, onTap) {
     }
   });
   function finish(e) {
-    const wasTap = pointers.size === 1 && mode === "maybe" && downInfo && !downInfo.moved;
+    const wasTap = pointers.size === 1 && mode === "maybe" && downInfo && !downInfo.moved && !hadPinch;
     if (wasTap) {
       const rect = canvas.getBoundingClientRect();
       const sx = canvas.width / rect.width, sy = canvas.height / rect.height;
@@ -317,7 +319,7 @@ function attachCanvasInteraction(canvas, wrap, zp, onTap) {
     }
     pointers.delete(e.pointerId);
     try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
-    if (pointers.size === 0) { mode = null; downInfo = null; panStartTxTy = null; }
+    if (pointers.size === 0) { mode = null; downInfo = null; panStartTxTy = null; hadPinch = false; }
     else if (pointers.size === 1) { mode = "maybe"; }
   }
   canvas.addEventListener("pointerup", finish);
