@@ -203,6 +203,109 @@ function snapToEdge(p, edgeMap) {
   return { x: p.x, y: p.y, snapped: false };
 }
 
+/* ---- Live-wire path between two trace points (intelligent-scissors style
+   shortest path along edge strength — classic Dijkstra, no AI/ML) ---- */
+class MinHeap {
+  constructor() { this.a = []; }
+  push(priority, value) {
+    this.a.push([priority, value]);
+    let i = this.a.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (this.a[p][0] <= this.a[i][0]) break;
+      [this.a[p], this.a[i]] = [this.a[i], this.a[p]];
+      i = p;
+    }
+  }
+  pop() {
+    if (this.a.length === 0) return null;
+    const top = this.a[0];
+    const last = this.a.pop();
+    if (this.a.length > 0) {
+      this.a[0] = last;
+      let i = 0;
+      while (true) {
+        const l = 2 * i + 1, r = 2 * i + 2;
+        let smallest = i;
+        if (l < this.a.length && this.a[l][0] < this.a[smallest][0]) smallest = l;
+        if (r < this.a.length && this.a[r][0] < this.a[smallest][0]) smallest = r;
+        if (smallest === i) break;
+        [this.a[smallest], this.a[i]] = [this.a[i], this.a[smallest]];
+        i = smallest;
+      }
+    }
+    return top; // [priority, value]
+  }
+  get size() { return this.a.length; }
+}
+const LIVEWIRE_MAX_SPAN = 260; // px; beyond this, fall back to a straight line
+const LIVEWIRE_PAD = 26;
+const LIVEWIRE_NEIGHBORS = [[1,0,1],[-1,0,1],[0,1,1],[0,-1,1],[1,1,Math.SQRT2],[1,-1,Math.SQRT2],[-1,1,Math.SQRT2],[-1,-1,Math.SQRT2]];
+function liveWirePath(edgeMap, p0, p1) {
+  if (!edgeMap) return [p0, p1];
+  const span = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+  if (span < 2 || span > LIVEWIRE_MAX_SPAN) return [p0, p1];
+
+  const { mag, w, h } = edgeMap;
+  const minX = Math.max(0, Math.floor(Math.min(p0.x, p1.x)) - LIVEWIRE_PAD);
+  const maxX = Math.min(w - 1, Math.ceil(Math.max(p0.x, p1.x)) + LIVEWIRE_PAD);
+  const minY = Math.max(0, Math.floor(Math.min(p0.y, p1.y)) - LIVEWIRE_PAD);
+  const maxY = Math.min(h - 1, Math.ceil(Math.max(p0.y, p1.y)) + LIVEWIRE_PAD);
+  const bw = maxX - minX + 1, bh = maxY - minY + 1;
+  if (bw * bh > 90000) return [p0, p1]; // safety cap for very long/odd spans
+
+  let maxMag = 1;
+  for (let y = minY; y <= maxY; y++) {
+    const rowBase = y * w;
+    for (let x = minX; x <= maxX; x++) {
+      const v = mag[rowBase + x];
+      if (v > maxMag) maxMag = v;
+    }
+  }
+
+  const N = bw * bh;
+  const distArr = new Float32Array(N).fill(Infinity);
+  const visited = new Uint8Array(N);
+  const prev = new Int32Array(N).fill(-1);
+  const sx = Math.round(p0.x) - minX, sy = Math.round(p0.y) - minY;
+  const gx0 = Math.round(p1.x) - minX, gy0 = Math.round(p1.y) - minY;
+  const start = sy * bw + sx, goal = gy0 * bw + gx0;
+  if (start < 0 || start >= N || goal < 0 || goal >= N) return [p0, p1];
+  distArr[start] = 0;
+
+  const heap = new MinHeap();
+  heap.push(0, start);
+  while (heap.size) {
+    const [d, u] = heap.pop();
+    if (visited[u]) continue;
+    visited[u] = 1;
+    if (u === goal) break;
+    const ux = u % bw, uy = (u / bw) | 0;
+    for (let k = 0; k < 8; k++) {
+      const [ddx, ddy, base] = LIVEWIRE_NEIGHBORS[k];
+      const vx = ux + ddx, vy = uy + ddy;
+      if (vx < 0 || vx >= bw || vy < 0 || vy >= bh) continue;
+      const v = vy * bw + vx;
+      if (visited[v]) continue;
+      const edgeStrength = mag[(vy + minY) * w + (vx + minX)];
+      const cost = base * (1 + ((maxMag - edgeStrength) / maxMag) * 9); // cheap to travel along strong edges
+      const nd = d + cost;
+      if (nd < distArr[v]) { distArr[v] = nd; prev[v] = u; heap.push(nd, v); }
+    }
+  }
+  if (distArr[goal] === Infinity) return [p0, p1];
+
+  const path = [];
+  let cur = goal, guard = 0;
+  while (cur !== -1 && guard < N + 5) {
+    path.push({ x: (cur % bw) + minX, y: ((cur / bw) | 0) + minY });
+    cur = prev[cur];
+    guard++;
+  }
+  path.reverse();
+  return path.length >= 2 ? path : [p0, p1];
+}
+
 /* ---- Zoom/pan controller for a canvas inside a clipping wrap ---- */
 function makeZoomPan(canvas, wrap) {
   const state = { fit: 1, zoom: 1, tx: 0, ty: 0 };
@@ -267,6 +370,7 @@ function attachCanvasInteraction(canvas, wrap, zp, onTap) {
   let startDist = 0, startZoom = 1;
   let downInfo = null, panStartTxTy = null;
   let hadPinch = false; // true once this gesture has involved 2 fingers
+  let pinchStartMidLocal = null, pinchStartTx = 0, pinchStartTy = 0;
 
   function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
@@ -284,6 +388,10 @@ function attachCanvasInteraction(canvas, wrap, zp, onTap) {
       startZoom = zp.state.zoom;
       mode = "pinch";
       hadPinch = true;
+      const wrapRect = wrap.getBoundingClientRect();
+      pinchStartMidLocal = { x: (a.x + b.x) / 2 - wrapRect.left, y: (a.y + b.y) / 2 - wrapRect.top };
+      pinchStartTx = zp.state.tx;
+      pinchStartTy = zp.state.ty;
     }
   });
   canvas.addEventListener("pointermove", (e) => {
@@ -293,11 +401,21 @@ function attachCanvasInteraction(canvas, wrap, zp, onTap) {
       const [a, b] = [...pointers.values()];
       const d = dist(a, b);
       if (startDist > 0) {
-        const newZoom = startZoom * (d / startDist);
+        const newZoom = Math.min(5, Math.max(1, startZoom * (d / startDist)));
         const wrapRect = wrap.getBoundingClientRect();
         const midX = (a.x + b.x) / 2 - wrapRect.left;
         const midY = (a.y + b.y) / 2 - wrapRect.top;
-        zp.zoomAt(newZoom, midX, midY);
+        // Keep the content that was under the fingers at pinch-start following
+        // the fingers as they move, in addition to scaling — pan + zoom together.
+        const oldScale = zp.state.fit * startZoom;
+        const contentX = (pinchStartMidLocal.x - pinchStartTx) / oldScale;
+        const contentY = (pinchStartMidLocal.y - pinchStartTy) / oldScale;
+        const newScale = zp.state.fit * newZoom;
+        zp.state.zoom = newZoom;
+        zp.state.tx = midX - contentX * newScale;
+        zp.state.ty = midY - contentY * newScale;
+        zp.clamp();
+        zp.apply();
       }
     } else if (pointers.size === 1 && downInfo) {
       const dx = e.clientX - downInfo.x, dy = e.clientY - downInfo.y;
@@ -337,6 +455,7 @@ function resetAddFlow() {
     photoImg: null,
     baseCanvas: null,     // photo drawn at working resolution
     tracePoints: [],
+    tracePathSegments: [],
     fullCutoutCanvas: null, // masked cutout at working resolution (untrimmed)
     category: null,
     openFront: false,
@@ -374,6 +493,7 @@ function finishCapture(source, srcW, srcH) {
   base.getContext("2d").drawImage(source, 0, 0, w, h);
   addState.baseCanvas = base;
   addState.tracePoints = [];
+  addState.tracePathSegments = []; // live-wire path between each consecutive pair of tracePoints
   addState.edgeMap = computeEdgeMap(base);
   goAddStep("addStepTrace", "Trace the item");
   setupTraceCanvas(); // after goAddStep so the wrap has real layout size for zoom-fit
@@ -481,13 +601,17 @@ function drawTrace() {
   ctx.clearRect(0, 0, traceCanvas.width, traceCanvas.height);
   ctx.drawImage(addState.baseCanvas, 0, 0);
   const pts = addState.tracePoints;
+  const segs = addState.tracePathSegments;
   if (pts.length) {
     ctx.strokeStyle = "#BD5A3F";
     ctx.fillStyle = "#BD5A3F";
     ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      for (let j = 1; j < seg.length; j++) ctx.lineTo(seg[j].x, seg[j].y);
+    }
     ctx.stroke();
     pts.forEach((p, i) => {
       ctx.beginPath();
@@ -518,6 +642,10 @@ function handleTracePoint(raw) {
       return;
     }
   }
+  if (pts.length > 0) {
+    const seg = liveWirePath(addState.edgeMap, pts[pts.length - 1], p);
+    addState.tracePathSegments.push(seg);
+  }
   pts.push(p);
   document.getElementById("traceConfirm").disabled = pts.length < 3;
   drawTrace();
@@ -525,13 +653,20 @@ function handleTracePoint(raw) {
 attachCanvasInteraction(traceCanvas, document.getElementById("traceCanvasWrap"), traceZP, handleTracePoint);
 document.getElementById("traceUndo").addEventListener("click", () => {
   addState.tracePoints.pop();
+  addState.tracePathSegments.pop();
   document.getElementById("traceConfirm").disabled = addState.tracePoints.length < 3;
   drawTrace();
 });
 document.getElementById("traceConfirm").addEventListener("click", () => {
   const pts = addState.tracePoints;
   if (pts.length < 3) return;
-  addState.fullCutoutCanvas = maskCutout(addState.baseCanvas, pts);
+  // Build the full traced outline: every live-wire segment, plus a closing
+  // segment routed from the last tap back to the first.
+  const closingSeg = liveWirePath(addState.edgeMap, pts[pts.length - 1], pts[0]);
+  const fullPolygon = [];
+  addState.tracePathSegments.forEach(seg => fullPolygon.push(...seg));
+  fullPolygon.push(...closingSeg);
+  addState.fullCutoutCanvas = maskCutout(addState.baseCanvas, fullPolygon);
 
   if (addState.editMode) {
     // Recropping: category is locked to what it already was; skip straight to
@@ -1023,6 +1158,7 @@ function attachDrag(el, inst) {
       pinchStart = {
         dist: dist(a, b),
         cx, cy,
+        midX: (a.x + b.x) / 2, midY: (a.y + b.y) / 2, // finger midpoint, in client px
         members: groupMembers.map(m => ({ id: m.instanceId, w: m.w, h: m.h, offX: m.x - cx, offY: m.y - cy })),
       };
     }
@@ -1036,13 +1172,15 @@ function attachDrag(el, inst) {
       if (pinchStart.dist > 0) {
         let factor = d / pinchStart.dist;
         factor = Math.max(0.3, Math.min(4, factor));
+        const curMidX = (a.x + b.x) / 2, curMidY = (a.y + b.y) / 2;
+        const panX = curMidX - pinchStart.midX, panY = curMidY - pinchStart.midY;
         pinchStart.members.forEach(pm => {
           const m = groupMembers.find(x => x.instanceId === pm.id);
           if (!m) return;
           m.w = Math.max(24, pm.w * factor);
           m.h = Math.max(24, pm.h * factor);
-          m.x = pinchStart.cx + pm.offX * factor;
-          m.y = pinchStart.cy + pm.offY * factor;
+          m.x = pinchStart.cx + pm.offX * factor + panX;
+          m.y = pinchStart.cy + pm.offY * factor + panY;
           const memEl = outfitCanvas.querySelector(`[data-instance-id="${m.instanceId}"]`);
           if (memEl) {
             memEl.style.left = m.x + "px"; memEl.style.top = m.y + "px";
