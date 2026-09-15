@@ -42,7 +42,7 @@
 <main id="screen-outfit" class="screen">
   <div class="outfit-toolbar">
     <button id="clearOutfitBtn" class="text-btn">Clear</button>
-    <span class="outfit-hint">Drag items onto the figure</span>
+    <span class="outfit-hint">Drag to move, pinch to resize</span>
     <button id="saveOutfitBtn" class="text-btn accent">Save look</button>
   </div>
   <div id="outfitCanvas" class="outfit-canvas">
@@ -63,15 +63,40 @@
 
   <div id="addStepCapture" class="add-step active">
     <div class="capture-box">
-      <label for="captureInput" class="capture-btn">Take or choose photo</label>
-      <input id="captureInput" type="file" accept="image/*" capture="environment" hidden>
+      <div class="capture-options">
+        <label for="captureInput" class="capture-btn">Take or choose photo</label>
+        <input id="captureInput" type="file" accept="image/*" capture="environment" hidden>
+        <button id="useTimerBtn" class="text-btn accent" type="button">Or use self-timer (photograph yourself wearing it)</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="addStepTimerCam" class="add-step">
+    <p class="step-instructions">Pick a delay, line up the shot, then start the timer.</p>
+    <div class="timer-cam-wrap">
+      <video id="timerVideo" playsinline autoplay muted></video>
+      <div id="timerCountdown" class="timer-countdown" hidden></div>
+    </div>
+    <div class="chiprow" id="timerDurationRow">
+      <button class="chip active" type="button" data-secs="3">3s</button>
+      <button class="chip" type="button" data-secs="5">5s</button>
+      <button class="chip" type="button" data-secs="10">10s</button>
+    </div>
+    <div class="step-actions">
+      <button id="timerFlipCam" class="text-btn" type="button">Flip camera</button>
+      <button id="timerStartBtn" class="primary-btn" type="button">Start timer</button>
     </div>
   </div>
 
   <div id="addStepTrace" class="add-step">
-    <p class="step-instructions">Tap around the edge of the item to trace it. Tap the first point again to close the shape.</p>
-    <div class="canvas-wrap">
+    <p class="step-instructions">Tap around the edge of the item to trace it. Tap the first point again to close the shape. Pinch, or use the &minus;/+ buttons, to zoom in for tricky edges.</p>
+    <div class="canvas-wrap" id="traceCanvasWrap">
       <canvas id="traceCanvas"></canvas>
+      <div class="zoom-controls">
+        <button type="button" data-zoom="out" aria-label="Zoom out">&minus;</button>
+        <button type="button" data-zoom="reset" aria-label="Reset zoom">Fit</button>
+        <button type="button" data-zoom="in" aria-label="Zoom in">+</button>
+      </div>
     </div>
     <div class="step-actions">
       <button id="traceUndo" class="text-btn">Undo point</button>
@@ -100,9 +125,14 @@
   </div>
 
   <div id="addStepSplit" class="add-step">
-    <p class="step-instructions">Draw one line down the opening — the app will separate the left and right panels along it.</p>
-    <div class="canvas-wrap">
+    <p class="step-instructions">Draw one line down the opening — the app will separate the left and right panels along it. Pinch, or use the &minus;/+ buttons, to zoom in for precision.</p>
+    <div class="canvas-wrap" id="splitCanvasWrap">
       <canvas id="splitCanvas"></canvas>
+      <div class="zoom-controls">
+        <button type="button" data-zoom="out" aria-label="Zoom out">&minus;</button>
+        <button type="button" data-zoom="reset" aria-label="Reset zoom">Fit</button>
+        <button type="button" data-zoom="in" aria-label="Zoom in">+</button>
+      </div>
     </div>
     <div class="step-actions">
       <button id="splitReset" class="text-btn">Redraw line</button>

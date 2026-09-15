@@ -62,6 +62,7 @@ const screens = {
   add: document.getElementById("screen-add"),
 };
 function showScreen(name) {
+  if (name !== "add") stopTimerCamera();
   Object.values(screens).forEach(s => s.classList.remove("active"));
   screens[name].classList.add("active");
   document.querySelectorAll(".tab-btn[data-screen]").forEach(b => {
@@ -199,12 +200,124 @@ function snapToEdge(p, edgeMap) {
   return { x: p.x, y: p.y, snapped: false };
 }
 
+/* ---- Zoom/pan controller for a canvas inside a clipping wrap ---- */
+function makeZoomPan(canvas, wrap) {
+  const state = { fit: 1, zoom: 1, tx: 0, ty: 0 };
+  function computeFit() {
+    const ww = wrap.clientWidth, wh = wrap.clientHeight;
+    state.fit = Math.min(ww / canvas.width, wh / canvas.height, 1) || 1;
+  }
+  function clamp() {
+    state.zoom = Math.min(5, Math.max(1, state.zoom));
+    const dispW = canvas.width * state.fit * state.zoom;
+    const dispH = canvas.height * state.fit * state.zoom;
+    const ww = wrap.clientWidth, wh = wrap.clientHeight;
+    if (dispW <= ww) state.tx = (ww - dispW) / 2;
+    else state.tx = Math.min(0, Math.max(ww - dispW, state.tx));
+    if (dispH <= wh) state.ty = (wh - dispH) / 2;
+    else state.ty = Math.min(0, Math.max(wh - dispH, state.ty));
+  }
+  function apply() {
+    canvas.style.width = canvas.width + "px";
+    canvas.style.height = canvas.height + "px";
+    canvas.style.transformOrigin = "0 0";
+    canvas.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.fit * state.zoom})`;
+  }
+  function reset() {
+    computeFit();
+    state.zoom = 1;
+    clamp();
+    apply();
+  }
+  function setZoom(z) {
+    state.zoom = z;
+    clamp();
+    apply();
+  }
+  function pan(dx, dy) {
+    state.tx += dx;
+    state.ty += dy;
+    clamp();
+    apply();
+  }
+  return { state, reset, setZoom, pan, clamp, apply };
+}
+
+/* ---- Tap / pan / pinch-zoom interaction for a trace-style canvas ---- */
+function attachCanvasInteraction(canvas, zp, onTap) {
+  const pointers = new Map();
+  let mode = null; // "maybe" | "pan" | "pinch"
+  let startDist = 0, startZoom = 1;
+  let downInfo = null, panStartTxTy = null;
+
+  function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+  canvas.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 1) {
+      downInfo = { x: e.clientX, y: e.clientY, moved: false };
+      panStartTxTy = { tx: zp.state.tx, ty: zp.state.ty };
+      mode = "maybe";
+    } else if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      startDist = dist(a, b);
+      startZoom = zp.state.zoom;
+      mode = "pinch";
+    }
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (mode === "pinch" && pointers.size >= 2) {
+      const [a, b] = [...pointers.values()];
+      const d = dist(a, b);
+      if (startDist > 0) zp.setZoom(startZoom * (d / startDist));
+    } else if (pointers.size === 1 && downInfo) {
+      const dx = e.clientX - downInfo.x, dy = e.clientY - downInfo.y;
+      if (mode === "pan" || Math.hypot(dx, dy) > 6) {
+        downInfo.moved = true;
+        mode = "pan";
+        zp.state.tx = panStartTxTy.tx + dx;
+        zp.state.ty = panStartTxTy.ty + dy;
+        zp.clamp(); zp.apply();
+      }
+    }
+  });
+  function finish(e) {
+    const wasTap = pointers.size === 1 && mode === "maybe" && downInfo && !downInfo.moved;
+    if (wasTap) {
+      const rect = canvas.getBoundingClientRect();
+      const sx = canvas.width / rect.width, sy = canvas.height / rect.height;
+      onTap({ x: (downInfo.x - rect.left) * sx, y: (downInfo.y - rect.top) * sy });
+    }
+    pointers.delete(e.pointerId);
+    try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+    if (pointers.size === 0) { mode = null; downInfo = null; panStartTxTy = null; }
+    else if (pointers.size === 1) { mode = "maybe"; }
+  }
+  canvas.addEventListener("pointerup", finish);
+  canvas.addEventListener("pointercancel", finish);
+}
+function bindZoomButtons(wrap, zp) {
+  wrap.querySelectorAll("[data-zoom]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const act = btn.dataset.zoom;
+      if (act === "in") zp.setZoom(zp.state.zoom * 1.4);
+      else if (act === "out") zp.setZoom(zp.state.zoom / 1.4);
+      else zp.reset();
+    });
+  });
+}
+
 /* ============================================================
    ADD FLOW STATE
    ============================================================ */
 let addState = {};
 
 function resetAddFlow() {
+  stopTimerCamera();
   addState = {
     photoImg: null,
     baseCanvas: null,     // photo drawn at working resolution
@@ -233,35 +346,117 @@ function goAddStep(id, label) {
   document.getElementById("addStepLabel").textContent = label;
 }
 
-/* ---- Step 1: capture ---- */
+/* ---- Step 1: capture (file input or self-timer) ---- */
+function finishCapture(source, srcW, srcH) {
+  const MAX = 900;
+  const scale = Math.min(1, MAX / Math.max(srcW, srcH));
+  const w = Math.round(srcW * scale), h = Math.round(srcH * scale);
+  const base = document.createElement("canvas");
+  base.width = w; base.height = h;
+  base.getContext("2d").drawImage(source, 0, 0, w, h);
+  addState.baseCanvas = base;
+  addState.tracePoints = [];
+  addState.edgeMap = computeEdgeMap(base);
+  goAddStep("addStepTrace", "Trace the item");
+  setupTraceCanvas(); // after goAddStep so the wrap has real layout size for zoom-fit
+}
+
 document.getElementById("captureInput").addEventListener("change", async (e) => {
   const file = e.target.files[0];
   if (!file) return;
   const url = URL.createObjectURL(file);
   const img = await loadImage(url);
   URL.revokeObjectURL(url);
-  addState.photoImg = img;
-
-  const MAX = 900;
-  const scale = Math.min(1, MAX / Math.max(img.width, img.height));
-  const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
-  const base = document.createElement("canvas");
-  base.width = w; base.height = h;
-  base.getContext("2d").drawImage(img, 0, 0, w, h);
-  addState.baseCanvas = base;
-  addState.tracePoints = [];
-  addState.edgeMap = computeEdgeMap(base);
-
-  setupTraceCanvas();
-  goAddStep("addStepTrace", "Trace the item");
+  finishCapture(img, img.width, img.height);
 });
+
+/* ---- Self-timer camera ---- */
+let timerStream = null;
+let timerFacing = "user";
+let timerSecs = 3;
+let timerCountdownHandle = null;
+
+document.getElementById("useTimerBtn").addEventListener("click", async () => {
+  goAddStep("addStepTimerCam", "Self-timer photo");
+  await startTimerCamera();
+});
+document.getElementById("timerDurationRow").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  document.querySelectorAll("#timerDurationRow .chip").forEach(c => c.classList.remove("active"));
+  chip.classList.add("active");
+  timerSecs = parseInt(chip.dataset.secs, 10);
+});
+document.getElementById("timerFlipCam").addEventListener("click", async () => {
+  timerFacing = timerFacing === "user" ? "environment" : "user";
+  await startTimerCamera();
+});
+document.getElementById("timerStartBtn").addEventListener("click", () => {
+  if (!timerStream) return;
+  runCountdownAndCapture();
+});
+
+async function startTimerCamera() {
+  stopTimerCamera();
+  const video = document.getElementById("timerVideo");
+  try {
+    timerStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: timerFacing }, audio: false });
+    video.srcObject = timerStream;
+  } catch (err) {
+    alert("Couldn't access the camera. Check this site's camera permission in your browser settings.");
+    goAddStep("addStepCapture", "Photograph item");
+  }
+}
+function stopTimerCamera() {
+  if (timerCountdownHandle) { clearInterval(timerCountdownHandle); timerCountdownHandle = null; }
+  const cd = document.getElementById("timerCountdown");
+  if (cd) cd.hidden = true;
+  if (timerStream) { timerStream.getTracks().forEach(t => t.stop()); timerStream = null; }
+}
+function runCountdownAndCapture() {
+  const el = document.getElementById("timerCountdown");
+  let n = timerSecs;
+  el.hidden = false;
+  el.textContent = n;
+  timerCountdownHandle = setInterval(() => {
+    n--;
+    if (n <= 0) {
+      clearInterval(timerCountdownHandle);
+      timerCountdownHandle = null;
+      el.hidden = true;
+      captureFromVideo();
+    } else {
+      el.textContent = n;
+    }
+  }, 1000);
+}
+function captureFromVideo() {
+  const video = document.getElementById("timerVideo");
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w || !h) return;
+  const shot = document.createElement("canvas");
+  shot.width = w; shot.height = h;
+  const ctx = shot.getContext("2d");
+  if (timerFacing === "user") {
+    // mirror the front camera so the photo matches what was previewed
+    ctx.translate(w, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.drawImage(video, 0, 0, w, h);
+  stopTimerCamera();
+  finishCapture(shot, w, h);
+}
 
 /* ---- Step 2: trace ---- */
 const traceCanvas = document.getElementById("traceCanvas");
+const traceZP = makeZoomPan(traceCanvas, document.getElementById("traceCanvasWrap"));
+bindZoomButtons(document.getElementById("traceCanvasWrap"), traceZP);
+
 function setupTraceCanvas() {
   const base = addState.baseCanvas;
   traceCanvas.width = base.width;
   traceCanvas.height = base.height;
+  traceZP.reset();
   drawTrace();
 }
 function drawTrace() {
@@ -294,14 +489,7 @@ function drawTrace() {
     }
   }
 }
-function canvasPointFromEvent(canvas, e) {
-  const rect = canvas.getBoundingClientRect();
-  const sx = canvas.width / rect.width, sy = canvas.height / rect.height;
-  const t = e.touches ? e.touches[0] : e;
-  return { x: (t.clientX - rect.left) * sx, y: (t.clientY - rect.top) * sy };
-}
-traceCanvas.addEventListener("pointerdown", (e) => {
-  const raw = canvasPointFromEvent(traceCanvas, e);
+function handleTracePoint(raw) {
   const snapped = snapToEdge(raw, addState.edgeMap);
   const p = { x: snapped.x, y: snapped.y };
   const pts = addState.tracePoints;
@@ -316,7 +504,8 @@ traceCanvas.addEventListener("pointerdown", (e) => {
   pts.push(p);
   document.getElementById("traceConfirm").disabled = pts.length < 3;
   drawTrace();
-});
+}
+attachCanvasInteraction(traceCanvas, traceZP, handleTracePoint);
 document.getElementById("traceUndo").addEventListener("click", () => {
   addState.tracePoints.pop();
   document.getElementById("traceConfirm").disabled = addState.tracePoints.length < 3;
@@ -349,8 +538,8 @@ document.getElementById("categoryContinue").addEventListener("click", () => {
   const wantsSplit = addState.category === "outerwear" && document.getElementById("openFrontToggle").checked;
   addState.openFront = wantsSplit;
   if (wantsSplit) {
-    setupSplitCanvas();
     goAddStep("addStepSplit", "Mark the opening");
+    setupSplitCanvas();
   } else {
     const trimmed = trimCanvas(addState.fullCutoutCanvas);
     addState.finalItems = [{
@@ -366,10 +555,14 @@ document.getElementById("categoryContinue").addEventListener("click", () => {
 
 /* ---- Step 4: split (open-front items) ---- */
 const splitCanvas = document.getElementById("splitCanvas");
+const splitZP = makeZoomPan(splitCanvas, document.getElementById("splitCanvasWrap"));
+bindZoomButtons(document.getElementById("splitCanvasWrap"), splitZP);
+
 function setupSplitCanvas() {
   const c = addState.fullCutoutCanvas;
   splitCanvas.width = c.width; splitCanvas.height = c.height;
   addState.splitPoints = [];
+  splitZP.reset();
   drawSplit();
 }
 function drawSplit() {
@@ -388,13 +581,13 @@ function drawSplit() {
     pts.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill(); });
   }
 }
-splitCanvas.addEventListener("pointerdown", (e) => {
-  const p = canvasPointFromEvent(splitCanvas, e);
+function handleSplitPoint(p) {
   if (addState.splitPoints.length >= 2) addState.splitPoints = [];
   addState.splitPoints.push(p);
   drawSplit();
   document.getElementById("splitConfirm").disabled = addState.splitPoints.length < 2;
-});
+}
+attachCanvasInteraction(splitCanvas, splitZP, handleSplitPoint);
 document.getElementById("splitReset").addEventListener("click", () => {
   addState.splitPoints = [];
   document.getElementById("splitConfirm").disabled = true;
@@ -629,12 +822,17 @@ function renderOutfitCanvas() {
 }
 
 function attachDrag(el, inst) {
-  let startX, startY, groupMembers, dragged;
+  const pointers = new Map();
+  let dragging = false, pinching = false;
+  let groupMembers = [];
+  let dragStart = null;
+  let pinchStart = null;
 
-  el.querySelector(".item-delete").addEventListener("pointerdown", (e) => {
-    e.stopPropagation();
-  });
-  el.querySelector(".item-delete").addEventListener("click", (e) => {
+  function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+  const delBtn = el.querySelector(".item-delete");
+  delBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+  delBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     placedInstances = placedInstances.filter(i => i.groupId !== inst.groupId);
     renderOutfitCanvas();
@@ -644,29 +842,78 @@ function attachDrag(el, inst) {
   el.addEventListener("pointerdown", (e) => {
     if (e.target.closest(".item-delete")) return;
     e.preventDefault();
-    dragged = false;
-    el.classList.add("dragging");
-    startX = e.clientX; startY = e.clientY;
-    groupMembers = placedInstances.filter(i => i.groupId === inst.groupId);
-    groupMembers.forEach(m => { m._origX = m.x; m._origY = m.y; });
     try { el.setPointerCapture(e.pointerId); } catch (err) {}
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    groupMembers = placedInstances.filter(i => i.groupId === inst.groupId);
+    if (pointers.size === 1) {
+      dragging = true;
+      dragStart = { x: e.clientX, y: e.clientY };
+      groupMembers.forEach(m => { m._origX = m.x; m._origY = m.y; });
+      el.classList.add("dragging");
+    } else if (pointers.size === 2) {
+      dragging = false;
+      el.classList.remove("dragging");
+      pinching = true;
+      const [a, b] = [...pointers.values()];
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      groupMembers.forEach(m => {
+        minX = Math.min(minX, m.x); minY = Math.min(minY, m.y);
+        maxX = Math.max(maxX, m.x + m.w); maxY = Math.max(maxY, m.y + m.h);
+      });
+      const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+      pinchStart = {
+        dist: dist(a, b),
+        cx, cy,
+        members: groupMembers.map(m => ({ id: m.instanceId, w: m.w, h: m.h, offX: m.x - cx, offY: m.y - cy })),
+      };
+    }
   });
   el.addEventListener("pointermove", (e) => {
-    if (!el.classList.contains("dragging")) return;
-    const dx = e.clientX - startX, dy = e.clientY - startY;
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragged = true;
-    groupMembers.forEach(m => {
-      m.x = m._origX + dx;
-      m.y = m._origY + dy;
-      const memEl = outfitCanvas.querySelector(`[data-instance-id="${m.instanceId}"]`);
-      if (memEl) { memEl.style.left = m.x + "px"; memEl.style.top = m.y + "px"; }
-    });
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinching && pointers.size >= 2 && pinchStart) {
+      const [a, b] = [...pointers.values()];
+      const d = dist(a, b);
+      if (pinchStart.dist > 0) {
+        let factor = d / pinchStart.dist;
+        factor = Math.max(0.3, Math.min(4, factor));
+        pinchStart.members.forEach(pm => {
+          const m = groupMembers.find(x => x.instanceId === pm.id);
+          if (!m) return;
+          m.w = Math.max(24, pm.w * factor);
+          m.h = Math.max(24, pm.h * factor);
+          m.x = pinchStart.cx + pm.offX * factor;
+          m.y = pinchStart.cy + pm.offY * factor;
+          const memEl = outfitCanvas.querySelector(`[data-instance-id="${m.instanceId}"]`);
+          if (memEl) {
+            memEl.style.left = m.x + "px"; memEl.style.top = m.y + "px";
+            memEl.style.width = m.w + "px"; memEl.style.height = m.h + "px";
+          }
+        });
+      }
+    } else if (dragging && pointers.size === 1 && dragStart) {
+      const dx = e.clientX - dragStart.x, dy = e.clientY - dragStart.y;
+      groupMembers.forEach(m => {
+        m.x = m._origX + dx;
+        m.y = m._origY + dy;
+        const memEl = outfitCanvas.querySelector(`[data-instance-id="${m.instanceId}"]`);
+        if (memEl) { memEl.style.left = m.x + "px"; memEl.style.top = m.y + "px"; }
+      });
+    }
   });
-  el.addEventListener("pointerup", (e) => {
-    el.classList.remove("dragging");
+  function endPointer(e) {
+    pointers.delete(e.pointerId);
     try { el.releasePointerCapture(e.pointerId); } catch (err) {}
-    if (dragged) saveOutfitState();
-  });
+    if (pointers.size < 2) pinching = false;
+    if (pointers.size === 0) {
+      const shouldSave = dragging || pinching;
+      dragging = false;
+      el.classList.remove("dragging");
+      if (shouldSave) saveOutfitState();
+    }
+  }
+  el.addEventListener("pointerup", endPointer);
+  el.addEventListener("pointercancel", endPointer);
 }
 
 document.getElementById("clearOutfitBtn").addEventListener("click", () => {
