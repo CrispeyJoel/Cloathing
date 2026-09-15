@@ -54,6 +54,9 @@ function idbDelete(store, key) {
 function uuid() {
   return "id-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 9);
 }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
 
 /* ---------------- Screen / tab navigation ---------------- */
 const screens = {
@@ -327,6 +330,9 @@ function resetAddFlow() {
     openFront: false,
     splitPoints: [],
     finalItems: [],       // one item (normal) or two items (split pair)
+    editMode: false,      // true when re-cropping an existing closet item
+    editPairId: null, editItemId: null, editLeftId: null, editRightId: null,
+    editName: null, editCategory: null,
   };
   document.querySelectorAll(".add-step").forEach(s => s.classList.remove("active"));
   document.getElementById("addStepCapture").classList.add("active");
@@ -515,6 +521,27 @@ document.getElementById("traceConfirm").addEventListener("click", () => {
   const pts = addState.tracePoints;
   if (pts.length < 3) return;
   addState.fullCutoutCanvas = maskCutout(addState.baseCanvas, pts);
+
+  if (addState.editMode) {
+    // Recropping: category is locked to what it already was; skip straight to
+    // split (if this item is a jacket pair) or save.
+    if (addState.editPairId) {
+      goAddStep("addStepSplit", "Retrace the opening");
+      setupSplitCanvas();
+    } else {
+      const trimmed = trimCanvas(addState.fullCutoutCanvas);
+      addState.finalItems = [{
+        img: canvasToDataURL(trimmed.canvas),
+        width: trimmed.width, height: trimmed.height,
+        offsetX: 0, offsetY: 0, pairWidth: trimmed.width, pairHeight: trimmed.height,
+        pairId: null, side: null, forcedId: addState.editItemId,
+      }];
+      showSavePreview();
+      goAddStep("addStepSave", "Name & save");
+    }
+    return;
+  }
+
   const preview = document.getElementById("cutoutPreview");
   const trimmed = trimCanvas(addState.fullCutoutCanvas);
   preview.width = trimmed.width; preview.height = trimmed.height;
@@ -612,15 +639,17 @@ document.getElementById("splitConfirm").addEventListener("click", () => {
   const rightFull = maskHalf(addState.fullCutoutCanvas, rightMask);
   const leftTrim = trimCanvas(leftFull);
   const rightTrim = trimCanvas(rightFull);
-  const pairId = uuid();
+  const pairId = addState.editMode && addState.editPairId ? addState.editPairId : uuid();
+  const leftId = addState.editMode ? addState.editLeftId : null;
+  const rightId = addState.editMode ? addState.editRightId : null;
 
   addState.finalItems = [
     { img: canvasToDataURL(leftTrim.canvas), width: leftTrim.width, height: leftTrim.height,
       offsetX: leftTrim.offsetX, offsetY: leftTrim.offsetY, pairWidth: w, pairHeight: h,
-      pairId, side: "left" },
+      pairId, side: "left", forcedId: leftId },
     { img: canvasToDataURL(rightTrim.canvas), width: rightTrim.width, height: rightTrim.height,
       offsetX: rightTrim.offsetX, offsetY: rightTrim.offsetY, pairWidth: w, pairHeight: h,
-      pairId, side: "right" },
+      pairId, side: "right", forcedId: rightId },
   ];
   showSavePreview();
   goAddStep("addStepSave", "Name & save");
@@ -641,12 +670,13 @@ function showSavePreview() {
 }
 document.getElementById("finalSaveBtn").addEventListener("click", async () => {
   const nameInput = document.getElementById("itemNameInput").value.trim();
-  const category = addState.category;
+  const category = addState.editMode ? addState.editCategory : addState.category;
   const groupThumb = await buildGroupThumb();
+  const sourcePhoto = canvasToDataURL(addState.baseCanvas);
   const now = Date.now();
   for (const it of addState.finalItems) {
     const record = {
-      id: uuid(),
+      id: it.forcedId || uuid(),
       pairId: it.pairId,
       side: it.side,
       name: nameInput || CAT_LABEL[category],
@@ -656,6 +686,7 @@ document.getElementById("finalSaveBtn").addEventListener("click", async () => {
       pairWidth: it.pairWidth, pairHeight: it.pairHeight,
       width: it.width, height: it.height,
       groupThumb,
+      sourcePhoto,
       createdAt: now,
     };
     await idbPut("items", record);
@@ -727,9 +758,127 @@ async function renderClosetGrid() {
       <img src="${it.groupThumb || it.img}" alt="${it.name}">
       <span class="card-label">${it.name}</span>
     `;
-    card.addEventListener("click", () => addItemToOutfit(it));
+    card.addEventListener("click", () => openItemSheet(it));
     grid.appendChild(card);
   });
+}
+
+/* ---------------- Item edit sheet (rename / recategorize / recrop / delete) ---------------- */
+function openItemSheet(displayItem) {
+  const overlay = document.createElement("div");
+  overlay.className = "overlay";
+  overlay.innerHTML = `
+    <div class="sheet">
+      <h2>Edit item</h2>
+      <div class="sheet-preview"><img src="${displayItem.groupThumb || displayItem.img}" alt=""></div>
+      <div class="field">
+        <label>Name</label>
+        <input type="text" id="editNameInput" value="${escapeHtml(displayItem.name)}" maxlength="40">
+      </div>
+      <div class="field">
+        <label>Category</label>
+        <div class="chiprow" id="editCatRow">
+          ${Object.keys(CAT_LABEL).map(c => `<button type="button" class="cat-btn${c === displayItem.category ? " selected" : ""}" data-cat="${c}">${CAT_LABEL[c]}</button>`).join("")}
+        </div>
+      </div>
+      <div class="sheetactions">
+        <button class="btn danger" id="itemDeleteBtn" type="button">Delete</button>
+        <button class="btn ghost" id="itemRecropBtn" type="button">Recrop</button>
+      </div>
+      <div class="sheetactions">
+        <button class="btn ghost" id="itemCancelBtn" type="button">Cancel</button>
+        <button class="btn primary" id="itemSaveBtn" type="button">Save</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+
+  let chosenCat = displayItem.category;
+  overlay.querySelectorAll("#editCatRow .cat-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      chosenCat = btn.dataset.cat;
+      overlay.querySelectorAll("#editCatRow .cat-btn").forEach(b => b.classList.remove("selected"));
+      btn.classList.add("selected");
+    });
+  });
+
+  overlay.querySelector("#itemCancelBtn").addEventListener("click", () => overlay.remove());
+
+  overlay.querySelector("#itemDeleteBtn").addEventListener("click", async () => {
+    if (!confirm(`Delete "${displayItem.name}" from your closet? This can't be undone.`)) return;
+    await deleteItem(displayItem);
+    overlay.remove();
+    renderClosetGrid();
+  });
+
+  overlay.querySelector("#itemSaveBtn").addEventListener("click", async () => {
+    const newName = overlay.querySelector("#editNameInput").value.trim() || CAT_LABEL[chosenCat];
+    await renameAndRecategorize(displayItem, newName, chosenCat);
+    overlay.remove();
+    renderClosetGrid();
+  });
+
+  overlay.querySelector("#itemRecropBtn").addEventListener("click", async () => {
+    overlay.remove();
+    await startRecrop(displayItem);
+  });
+}
+
+async function renameAndRecategorize(displayItem, newName, newCategory) {
+  const all = await idbGetAll("items");
+  const targets = displayItem.pairId
+    ? all.filter(x => x.pairId === displayItem.pairId)
+    : all.filter(x => x.id === displayItem.id);
+  for (const rec of targets) {
+    rec.name = newName;
+    rec.category = newCategory;
+    await idbPut("items", rec);
+  }
+}
+
+async function deleteItem(displayItem) {
+  const all = await idbGetAll("items");
+  const idsToDelete = (displayItem.pairId ? all.filter(x => x.pairId === displayItem.pairId) : all.filter(x => x.id === displayItem.id))
+    .map(x => x.id);
+  for (const id of idsToDelete) await idbDelete("items", id);
+
+  // drop any placed instances on the outfit canvas that pointed at the deleted item(s)
+  const saved = await idbGet("state", "currentOutfit");
+  if (saved && saved.instances) {
+    const cleaned = saved.instances.filter(i => !idsToDelete.includes(i.itemId));
+    if (cleaned.length !== saved.instances.length) {
+      await idbPut("state", { key: "currentOutfit", instances: cleaned });
+    }
+  }
+  placedInstances = placedInstances.filter(i => !idsToDelete.includes(i.itemId));
+}
+
+async function startRecrop(displayItem) {
+  if (!displayItem.sourcePhoto) {
+    alert("This item was saved before recropping was supported, so there's no original photo to re-trace. Delete and re-add it to enable recropping.");
+    return;
+  }
+  const img = await loadImage(displayItem.sourcePhoto);
+  addState = {
+    photoImg: img, baseCanvas: null, tracePoints: [], fullCutoutCanvas: null,
+    category: displayItem.category, openFront: false, splitPoints: [], finalItems: [],
+    editMode: true,
+    editPairId: displayItem.pairId || null,
+    editItemId: displayItem.pairId ? null : displayItem.id,
+    editLeftId: null, editRightId: null,
+    editName: displayItem.name, editCategory: displayItem.category,
+  };
+  if (displayItem.pairId) {
+    const all = await idbGetAll("items");
+    const left = all.find(x => x.pairId === displayItem.pairId && x.side === "left");
+    const right = all.find(x => x.pairId === displayItem.pairId && x.side === "right");
+    addState.editLeftId = left ? left.id : uuid();
+    addState.editRightId = right ? right.id : uuid();
+  }
+  document.getElementById("itemNameInput").value = displayItem.name;
+  showScreen("add");
+  finishCapture(img, img.width, img.height);
 }
 
 /* ============================================================
