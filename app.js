@@ -237,17 +237,31 @@ function makeZoomPan(canvas, wrap) {
     clamp();
     apply();
   }
+  function zoomAt(z, anchorX, anchorY) {
+    // Change zoom while keeping the content under (anchorX, anchorY) — in
+    // wrap-local pixels — visually stationary, like a real pinch gesture.
+    const oldScale = state.fit * state.zoom;
+    const newZoom = Math.min(5, Math.max(1, z));
+    const newScale = state.fit * newZoom;
+    const contentX = (anchorX - state.tx) / oldScale;
+    const contentY = (anchorY - state.ty) / oldScale;
+    state.zoom = newZoom;
+    state.tx = anchorX - contentX * newScale;
+    state.ty = anchorY - contentY * newScale;
+    clamp();
+    apply();
+  }
   function pan(dx, dy) {
     state.tx += dx;
     state.ty += dy;
     clamp();
     apply();
   }
-  return { state, reset, setZoom, pan, clamp, apply };
+  return { state, reset, setZoom, zoomAt, pan, clamp, apply };
 }
 
 /* ---- Tap / pan / pinch-zoom interaction for a trace-style canvas ---- */
-function attachCanvasInteraction(canvas, zp, onTap) {
+function attachCanvasInteraction(canvas, wrap, zp, onTap) {
   const pointers = new Map();
   let mode = null; // "maybe" | "pan" | "pinch"
   let startDist = 0, startZoom = 1;
@@ -276,7 +290,13 @@ function attachCanvasInteraction(canvas, zp, onTap) {
     if (mode === "pinch" && pointers.size >= 2) {
       const [a, b] = [...pointers.values()];
       const d = dist(a, b);
-      if (startDist > 0) zp.setZoom(startZoom * (d / startDist));
+      if (startDist > 0) {
+        const newZoom = startZoom * (d / startDist);
+        const wrapRect = wrap.getBoundingClientRect();
+        const midX = (a.x + b.x) / 2 - wrapRect.left;
+        const midY = (a.y + b.y) / 2 - wrapRect.top;
+        zp.zoomAt(newZoom, midX, midY);
+      }
     } else if (pointers.size === 1 && downInfo) {
       const dx = e.clientX - downInfo.x, dy = e.clientY - downInfo.y;
       if (mode === "pan" || Math.hypot(dx, dy) > 6) {
@@ -302,16 +322,6 @@ function attachCanvasInteraction(canvas, zp, onTap) {
   }
   canvas.addEventListener("pointerup", finish);
   canvas.addEventListener("pointercancel", finish);
-}
-function bindZoomButtons(wrap, zp) {
-  wrap.querySelectorAll("[data-zoom]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const act = btn.dataset.zoom;
-      if (act === "in") zp.setZoom(zp.state.zoom * 1.4);
-      else if (act === "out") zp.setZoom(zp.state.zoom / 1.4);
-      else zp.reset();
-    });
-  });
 }
 
 /* ============================================================
@@ -456,7 +466,6 @@ function captureFromVideo() {
 /* ---- Step 2: trace ---- */
 const traceCanvas = document.getElementById("traceCanvas");
 const traceZP = makeZoomPan(traceCanvas, document.getElementById("traceCanvasWrap"));
-bindZoomButtons(document.getElementById("traceCanvasWrap"), traceZP);
 
 function setupTraceCanvas() {
   const base = addState.baseCanvas;
@@ -511,7 +520,7 @@ function handleTracePoint(raw) {
   document.getElementById("traceConfirm").disabled = pts.length < 3;
   drawTrace();
 }
-attachCanvasInteraction(traceCanvas, traceZP, handleTracePoint);
+attachCanvasInteraction(traceCanvas, document.getElementById("traceCanvasWrap"), traceZP, handleTracePoint);
 document.getElementById("traceUndo").addEventListener("click", () => {
   addState.tracePoints.pop();
   document.getElementById("traceConfirm").disabled = addState.tracePoints.length < 3;
@@ -583,7 +592,6 @@ document.getElementById("categoryContinue").addEventListener("click", () => {
 /* ---- Step 4: split (open-front items) ---- */
 const splitCanvas = document.getElementById("splitCanvas");
 const splitZP = makeZoomPan(splitCanvas, document.getElementById("splitCanvasWrap"));
-bindZoomButtons(document.getElementById("splitCanvasWrap"), splitZP);
 
 function setupSplitCanvas() {
   const c = addState.fullCutoutCanvas;
@@ -614,7 +622,7 @@ function handleSplitPoint(p) {
   drawSplit();
   document.getElementById("splitConfirm").disabled = addState.splitPoints.length < 2;
 }
-attachCanvasInteraction(splitCanvas, splitZP, handleSplitPoint);
+attachCanvasInteraction(splitCanvas, document.getElementById("splitCanvasWrap"), splitZP, handleSplitPoint);
 document.getElementById("splitReset").addEventListener("click", () => {
   addState.splitPoints = [];
   document.getElementById("splitConfirm").disabled = true;

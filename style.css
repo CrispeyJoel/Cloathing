@@ -296,24 +296,6 @@ body{
 }
 .step-actions .primary-btn{width:auto;flex:1;}
 
-.zoom-controls{
-  position:absolute;
-  right:8px;bottom:8px;
-  display:flex;
-  gap:6px;
-  z-index:5;
-}
-.zoom-controls button{
-  border:1px solid var(--line);
-  background:var(--surface-2);
-  color:var(--ink);
-  width:32px;height:32px;
-  border-radius:8px;
-  font-size:0.85rem;
-  box-shadow:0 1px 3px rgba(0,0,0,0.4);
-}
-.zoom-controls button[data-zoom="reset"]{width:auto;padding:0 8px;font-size:0.68rem;}
-
 .chiprow{
   display:flex;
   gap:8px;
