@@ -474,10 +474,13 @@ function resetAddFlow() {
     editMode: false,      // true when re-cropping an existing closet item
     editPairId: null, editItemId: null, editLeftId: null, editRightId: null,
     editName: null, editCategory: null,
+    snapEnabled: true,    // magnetic edge snap + live-wire, toggleable while tracing
+    stepStack: [],         // for the per-step Back/Retake button
   };
   document.querySelectorAll(".add-step").forEach(s => s.classList.remove("active"));
   document.getElementById("addStepCapture").classList.add("active");
   document.getElementById("addStepLabel").textContent = "Photograph item";
+  document.getElementById("addStepBack").style.visibility = "hidden";
   document.getElementById("captureInput").value = "";
   document.getElementById("traceConfirm").disabled = true;
   document.getElementById("itemNameInput").value = "";
@@ -485,13 +488,52 @@ function resetAddFlow() {
   document.getElementById("categoryContinue").disabled = true;
   document.getElementById("openFrontRow").hidden = true;
   document.getElementById("openFrontToggle").checked = false;
+  setSnapToggleUI(true);
 }
 
-function goAddStep(id, label) {
+function setSnapToggleUI(on) {
+  const btn = document.getElementById("snapToggleBtn");
+  btn.textContent = on ? "Snap to edge: On" : "Snap to edge: Off";
+  btn.classList.toggle("active", on);
+}
+document.getElementById("snapToggleBtn").addEventListener("click", () => {
+  addState.snapEnabled = !addState.snapEnabled;
+  setSnapToggleUI(addState.snapEnabled);
+});
+
+const ADD_STEP_LABELS = {
+  addStepCapture: "Photograph item",
+  addStepTimerCam: "Self-timer photo",
+  addStepTrace: "Trace the item",
+  addStepCategory: "Choose a category",
+  addStepSplit: "Mark the opening",
+  addStepSave: "Name & save",
+};
+function goAddStep(id, label, opts = {}) {
+  const { fromBack = false } = opts;
+  if (!fromBack) {
+    const current = document.querySelector(".add-step.active");
+    if (current && current.id !== id) {
+      addState.stepStack = addState.stepStack || [];
+      addState.stepStack.push(current.id);
+    }
+  }
   document.querySelectorAll(".add-step").forEach(s => s.classList.remove("active"));
   document.getElementById(id).classList.add("active");
   document.getElementById("addStepLabel").textContent = label;
+  const backBtn = document.getElementById("addStepBack");
+  const hasBack = addState.stepStack && addState.stepStack.length > 0;
+  backBtn.style.visibility = hasBack ? "visible" : "hidden";
+  backBtn.textContent = id === "addStepTrace" ? "Retake photo" : "Back";
 }
+document.getElementById("addStepBack").addEventListener("click", () => {
+  const stack = addState.stepStack || [];
+  const prevId = stack.pop();
+  if (!prevId) return;
+  goAddStep(prevId, ADD_STEP_LABELS[prevId] || "", { fromBack: true });
+  if (prevId === "addStepTrace") setupTraceCanvas(); // safe: doesn't clear existing points
+  if (prevId === "addStepSplit") setupSplitCanvas();  // note: this clears the drawn split line
+});
 
 /* ---- Step 1: capture (file input or self-timer) ---- */
 function finishCapture(source, srcW, srcH) {
@@ -641,8 +683,7 @@ function drawTrace() {
   }
 }
 function handleTracePoint(raw) {
-  const snapped = snapToEdge(raw, addState.edgeMap);
-  const p = { x: snapped.x, y: snapped.y };
+  const p = addState.snapEnabled ? (() => { const s = snapToEdge(raw, addState.edgeMap); return { x: s.x, y: s.y }; })() : { x: raw.x, y: raw.y };
   const pts = addState.tracePoints;
   if (pts.length > 2) {
     const d = Math.hypot(raw.x - pts[0].x, raw.y - pts[0].y);
@@ -653,7 +694,8 @@ function handleTracePoint(raw) {
     }
   }
   if (pts.length > 0) {
-    const seg = liveWirePath(addState.edgeMap, pts[pts.length - 1], p);
+    const prev = pts[pts.length - 1];
+    const seg = addState.snapEnabled ? liveWirePath(addState.edgeMap, prev, p) : [prev, p];
     addState.tracePathSegments.push(seg);
   }
   pts.push(p);
@@ -672,7 +714,9 @@ document.getElementById("traceConfirm").addEventListener("click", () => {
   if (pts.length < 3) return;
   // Build the full traced outline: every live-wire segment, plus a closing
   // segment routed from the last tap back to the first.
-  const closingSeg = liveWirePath(addState.edgeMap, pts[pts.length - 1], pts[0]);
+  const closingSeg = addState.snapEnabled
+    ? liveWirePath(addState.edgeMap, pts[pts.length - 1], pts[0])
+    : [pts[pts.length - 1], pts[0]];
   const fullPolygon = [];
   addState.tracePathSegments.forEach(seg => fullPolygon.push(...seg));
   fullPolygon.push(...closingSeg);
@@ -1023,7 +1067,10 @@ async function startRecrop(displayItem) {
     editItemId: displayItem.pairId ? null : displayItem.id,
     editLeftId: null, editRightId: null,
     editName: displayItem.name, editCategory: displayItem.category,
+    snapEnabled: true,
+    stepStack: [],
   };
+  setSnapToggleUI(true);
   if (displayItem.pairId) {
     const all = await idbGetAll("items");
     const left = all.find(x => x.pairId === displayItem.pairId && x.side === "left");

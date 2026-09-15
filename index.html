@@ -58,7 +58,7 @@
   <div class="add-header">
     <button id="addBack" class="text-btn">Cancel</button>
     <span id="addStepLabel" class="add-step-label">Photograph item</span>
-    <span style="width:52px"></span>
+    <button id="addStepBack" class="text-btn accent" type="button" style="visibility:hidden">Back</button>
   </div>
 
   <div id="addStepCapture" class="add-step active">
@@ -89,7 +89,10 @@
   </div>
 
   <div id="addStepTrace" class="add-step">
-    <p class="step-instructions">Tap a handful of points around the item — it'll trace the actual edge between each pair of taps for you, so you don't need to trace every curve by hand. Tap the first point again to close the shape. Pinch with two fingers to zoom in for tricky spots.</p>
+    <p class="step-instructions">Tap a handful of points around the item to trace it. Tap the first point again to close the shape. Pinch with two fingers to zoom in for tricky spots.</p>
+    <div class="chiprow">
+      <button id="snapToggleBtn" class="chip active" type="button">Snap to edge: On</button>
+    </div>
     <div class="canvas-wrap" id="traceCanvasWrap">
       <canvas id="traceCanvas"></canvas>
     </div>
