@@ -2,6 +2,16 @@
    Closet — storage, trace/cutout, split, outfit canvas
    ============================================================ */
 
+// Surface errors instead of silently doing nothing — makes future bugs
+// reportable instead of invisible.
+window.addEventListener("error", (e) => {
+  alert("Something went wrong: " + (e.message || "unknown error") + "\n(Screenshot this and send it over.)");
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const msg = (e.reason && e.reason.message) ? e.reason.message : String(e.reason);
+  alert("Something went wrong: " + msg + "\n(Screenshot this and send it over.)");
+});
+
 const CAT_ORDER = { body: 0, bottom: 1, shoes: 1, top: 2, outerwear: 3, accessory: 4 };
 const CAT_LABEL = { top: "Top", outerwear: "Outerwear", bottom: "Bottom", shoes: "Shoes", accessory: "Accessory", body: "Body" };
 
